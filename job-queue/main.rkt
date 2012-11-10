@@ -2,18 +2,19 @@
 (require racket/list
          racket/match
          racket/local
-         racket/contract)
+         racket/contract
+         racket/async-channel)
 
 (define current-worker (make-parameter #f))
 
-(define-struct job-queue (channel))
+(define-struct job-queue (async-channel))
 (define-struct job (paramz thunk))
 (define-struct done ())
 
 (define (make-queue how-many)
-  (define jobs-ch (make-channel))
-  (define work-ch (make-channel))
-  (define done-ch (make-channel))
+  (define jobs-ch (make-async-channel))
+  (define work-ch (make-async-channel))
+  (define done-ch (make-async-channel))
   (define (working-manager spaces accept-new? jobs continues)
     (if (and (not accept-new?)
              (empty? jobs)
@@ -38,13 +39,13 @@
          (if (empty? jobs)
              never-evt
              (handle-evt
-              (channel-put-evt work-ch (first jobs))
+              (async-channel-put-evt work-ch (first jobs))
               (lambda (_)
                 (working-manager spaces accept-new? (rest jobs) continues))))
          (map
           (lambda (reply-ch)
             (handle-evt
-             (channel-put-evt reply-ch 'continue)
+             (async-channel-put-evt reply-ch 'continue)
              (lambda (_)
                (working-manager (add1 spaces) accept-new? jobs (remq reply-ch continues)))))
           continues))))
@@ -54,19 +55,19 @@
        (handle-evt
         done-ch
         (lambda (reply-ch)
-          (channel-put reply-ch 'stop)
+          (async-channel-put reply-ch 'stop)
           (killing-manager (sub1 left)))))))
   (define (worker i)
-    (match (channel-get work-ch)
+    (match (async-channel-get work-ch)
       [(struct job (paramz thunk))
        (call-with-parameterization 
         paramz 
         (lambda () 
           (parameterize ([current-worker i])
             (thunk))))
-       (local [(define reply-ch (make-channel))]
-         (channel-put done-ch reply-ch)
-         (local [(define reply-v (channel-get reply-ch))]
+       (local [(define reply-ch (make-async-channel))]
+         (async-channel-put done-ch reply-ch)
+         (local [(define reply-v (async-channel-get reply-ch))]
            (case reply-v
              [(continue) (worker i)]
              [(stop) (void)]
@@ -81,14 +82,14 @@
   (make-job-queue jobs-ch))
 
 (define (submit-job! jobq thunk)
-  (channel-put
-   (job-queue-channel jobq)
+  (async-channel-put
+   (job-queue-async-channel jobq)
    (make-job (current-parameterization)
              thunk)))
 
 (define (stop-job-queue! jobq)
-  (channel-put
-   (job-queue-channel jobq)
+  (async-channel-put
+   (job-queue-async-channel jobq)
    (make-done)))
 
 (provide/contract
