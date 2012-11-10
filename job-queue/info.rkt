@@ -8,5 +8,5 @@
 (define blurb
   (list "A multi-threaded work queue manager"))
 (define scribblings '(("job-queue.scrbl" ())))
-(define primary-file "main.ss")
+(define primary-file "main.rkt")
 (define categories '(misc))

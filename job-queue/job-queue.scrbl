@@ -1,15 +1,15 @@
 #lang scribble/manual
-@(require (for-label scheme/base
-                     scheme/gui
-                     scheme/contract
-                     "main.ss"))
+@(require (for-label racket/base
+                     racket/gui
+                     racket/contract
+                     "main.rkt"))
 
 @title{Job Queue}
-@author{@(author+email "Jay McCarthy" "jay@plt-scheme.org")}
+@author{@(author+email "Jay McCarthy" "jay@racket-lang.org")}
 
 A multi-threaded job queue.
 
-@defmodule[(planet jaymccarthy/job-queue)]
+@defmodule[job-queue]
 
 @defthing[current-worker (parameter/c (or/c false/c exact-nonnegative-integer?))]
 

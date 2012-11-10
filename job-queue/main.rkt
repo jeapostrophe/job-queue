@@ -1,4 +1,8 @@
-#lang scheme
+#lang racket/base
+(require racket/list
+         racket/match
+         racket/local
+         racket/contract)
 
 (define current-worker (make-parameter #f))
 
