@@ -7,7 +7,7 @@
 
 (define current-worker (make-parameter #f))
 
-(define-struct job-queue (async-channel))
+(define-struct job-queue (manager async-channel))
 (define-struct job (paramz thunk))
 (define-struct done ())
 
@@ -19,7 +19,7 @@
     (if (and (not accept-new?)
              (empty? jobs)
              (empty? continues))
-        (killing-manager how-many)
+        (first-killing-manager how-many)
         (apply
          sync
          (if (and accept-new?
@@ -45,10 +45,15 @@
          (map
           (lambda (reply-ch)
             (handle-evt
-             (async-channel-put-evt reply-ch 'continue)
+             (async-channel-put-evt reply-ch
+                                    (if accept-new? 'continue 'stop))
              (lambda (_)
                (working-manager (add1 spaces) accept-new? jobs (remq reply-ch continues)))))
           continues))))
+  (define (first-killing-manager left)
+    (for ([i (in-range left)])
+      (async-channel-put work-ch #f))
+    (killing-manager left))
   (define (killing-manager left)
     (unless (zero? left)
       (sync
@@ -58,28 +63,30 @@
           (async-channel-put reply-ch 'stop)
           (killing-manager (sub1 left)))))))
   (define (worker i)
-    (match (async-channel-get work-ch)
+    (define v (async-channel-get work-ch))
+    (match v
+      [#f (void)]
       [(struct job (paramz thunk))
        (call-with-parameterization 
         paramz 
         (lambda () 
           (parameterize ([current-worker i])
-            (thunk))))
-       (local [(define reply-ch (make-async-channel))]
-         (async-channel-put done-ch reply-ch)
-         (local [(define reply-v (async-channel-get reply-ch))]
-           (case reply-v
-             [(continue) (worker i)]
-             [(stop) (void)]
-             [else
-              (error 'worker "Unknown reply command")])))]))
+            (thunk))))])
+    (local [(define reply-ch (make-async-channel))]
+      (async-channel-put done-ch reply-ch)
+      (local [(define reply-v (async-channel-get reply-ch))]
+        (case reply-v
+          [(continue) (worker i)]
+          [(stop) (void)]
+          [else
+           (error 'worker "Unknown reply command")]))))
   (define the-workers
     (for/list ([i (in-range 0 how-many)])
       (thread (lambda ()
                 (worker i)))))
   (define the-manager
     (thread (lambda () (working-manager how-many #t empty empty))))
-  (make-job-queue jobs-ch))
+  (make-job-queue the-manager jobs-ch))
 
 (define (submit-job! jobq thunk)
   (async-channel-put
@@ -90,7 +97,8 @@
 (define (stop-job-queue! jobq)
   (async-channel-put
    (job-queue-async-channel jobq)
-   (make-done)))
+   (make-done))
+  (void (sync (job-queue-manager jobq))))
 
 (provide/contract
  [current-worker (parameter/c (or/c false/c exact-nonnegative-integer?))]
