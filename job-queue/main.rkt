@@ -1,15 +1,14 @@
 #lang racket/base
 (require racket/list
          racket/match
-         racket/local
          racket/contract
          racket/async-channel)
 
 (define current-worker (make-parameter #f))
 
-(define-struct job-queue (manager async-channel))
-(define-struct job (paramz thunk))
-(define-struct done ())
+(struct job-queue (manager async-channel))
+(struct job (paramz thunk))
+(struct done ())
 
 (define (make-queue how-many)
   (define jobs-ch (make-async-channel))
@@ -19,40 +18,41 @@
     (if (and (not accept-new?)
              (empty? jobs)
              (empty? continues))
-        (first-killing-manager how-many)
-        (apply
-         sync
-         (if (and accept-new?
-                  (not (zero? spaces)))
-             (handle-evt
-              jobs-ch
-              (match-lambda
-                [(? job? the-job)
-                 (working-manager (sub1 spaces) accept-new? (list* the-job jobs) continues)]
-                [(? done?)
-                 (working-manager spaces #f jobs continues)]))
-             never-evt)
+      (first-killing-manager how-many)
+      (apply
+       sync
+       (if (and accept-new?
+                (not (zero? spaces)))
          (handle-evt
-          done-ch
-          (lambda (reply-ch)
-            (working-manager spaces accept-new? jobs (list* reply-ch continues))))
-         (if (empty? jobs)
-             never-evt
-             (handle-evt
-              (async-channel-put-evt work-ch (first jobs))
-              (lambda (_)
-                (working-manager spaces accept-new? (rest jobs) continues))))
-         (map
-          (lambda (reply-ch)
-            (handle-evt
-             (async-channel-put-evt reply-ch
-                                    (if accept-new? 'continue 'stop))
-             (lambda (_)
-               (working-manager (add1 spaces) accept-new? jobs (remq reply-ch continues)))))
-          continues))))
+          jobs-ch
+          (match-lambda
+            [(? job? the-job)
+             (working-manager (sub1 spaces) accept-new? (list* the-job jobs) continues)]
+            [(? done?)
+             (working-manager spaces #f jobs continues)]))
+         never-evt)
+       (handle-evt
+        done-ch
+        (lambda (reply-ch)
+          (working-manager spaces accept-new? jobs (list* reply-ch continues))))
+       (if (empty? jobs)
+         never-evt
+         (handle-evt
+          (async-channel-put-evt work-ch (first jobs))
+          (lambda (_)
+            (working-manager spaces accept-new? (rest jobs) continues))))
+       (map
+        (lambda (reply-ch)
+          (handle-evt
+           (async-channel-put-evt reply-ch
+                                  (if accept-new? 'continue 'stop))
+           (lambda (_)
+             (working-manager (add1 spaces) accept-new? jobs (remq reply-ch continues)))))
+        continues))))
   (define (first-killing-manager left)
-    (for ([i (in-range left)])
-      (async-channel-put work-ch #f))
+    (for ([(i quit-sema) (in-hash worker->quit-sema)])
+      (printf "m quit to ~a\n" i)
+      (semaphore-post quit-sema))
     (killing-manager left))
   (define (killing-manager left)
     (unless (zero? left)
@@ -60,44 +60,55 @@
        (handle-evt
         done-ch
         (lambda (reply-ch)
+          (printf "m stop at ~a\n" left)
           (async-channel-put reply-ch 'stop)
           (killing-manager (sub1 left)))))))
-  (define (worker i)
-    (define v (async-channel-get work-ch))
-    (match v
-      [#f (void)]
-      [(struct job (paramz thunk))
-       (call-with-parameterization 
-        paramz 
-        (lambda () 
-          (parameterize ([current-worker i])
-            (thunk))))])
-    (local [(define reply-ch (make-async-channel))]
-      (async-channel-put done-ch reply-ch)
-      (local [(define reply-v (async-channel-get reply-ch))]
-        (case reply-v
-          [(continue) (worker i)]
-          [(stop) (void)]
-          [else
-           (error 'worker "Unknown reply command")]))))
-  (define the-workers
-    (for/list ([i (in-range 0 how-many)])
-      (thread (lambda ()
-                (worker i)))))
+  (define (worker quit-sema i)
+    (printf "~a waiting for job\n" i)
+    (sync
+     (handle-evt quit-sema void)
+     (handle-evt
+      work-ch
+      (match-lambda
+        [(struct job (paramz thunk))
+         (with-handlers ([exn?
+                          (λ (e)
+                            (printf "Caught ~v\n" e)
+                            ((error-display-handler) (exn-message e) e)
+                            (printf "Printed\n"))])
+           (call-with-parameterization
+            paramz
+            (lambda ()
+              (parameterize ([current-worker i])
+                (thunk)))))])))
+    (define reply-ch (make-async-channel))
+    (async-channel-put done-ch reply-ch)
+    (printf "~a waiting for reply\n" i)
+    (define reply-v (async-channel-get reply-ch))
+    (case reply-v
+      [(continue) (worker quit-sema i)]
+      [(stop) (void)]
+      [else
+       (error 'worker "Unknown reply command")]))
+  (define worker->quit-sema
+    (for/hasheq ([i (in-range 0 how-many)])
+      (define quit-sema (make-semaphore 0))
+      (thread (lambda () (worker quit-sema i)))
+      (values i quit-sema)))
   (define the-manager
     (thread (lambda () (working-manager how-many #t empty empty))))
-  (make-job-queue the-manager jobs-ch))
+  (job-queue the-manager jobs-ch))
 
 (define (submit-job! jobq thunk)
   (async-channel-put
    (job-queue-async-channel jobq)
-   (make-job (current-parameterization)
+   (job (current-parameterization)
              thunk)))
 
 (define (stop-job-queue! jobq)
   (async-channel-put
    (job-queue-async-channel jobq)
-   (make-done))
+   (done))
   (void (sync (job-queue-manager jobq))))
 
 (provide/contract
@@ -106,3 +117,16 @@
  [rename make-queue make-job-queue (exact-nonnegative-integer? . -> . job-queue?)]
  [submit-job! (job-queue? (-> any) . -> . void)]
  [stop-job-queue! (job-queue? . -> . void)])
+
+(module* test racket/base
+  (require (submod ".."))
+  (define jq (make-job-queue 4))
+
+  (submit-job! jq (λ () (error 'foo)))
+  (submit-job! jq (λ () (error 'bar)))
+  (submit-job! jq (λ () (displayln 4)))
+  (submit-job! jq (λ () (displayln 5)))
+
+  (stop-job-queue! jq)
+
+  (printf "Done\n"))
