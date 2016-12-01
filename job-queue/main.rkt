@@ -12,7 +12,7 @@
 (define (make-queue how-many)
   (define work-ch (make-async-channel))
   (define count-sema (make-semaphore 0))
-  
+
   (define (worker quit-sema i)
     (sync
      ;; Die when this semaphore is signaled
@@ -82,7 +82,9 @@
 
 (module* test racket/base
   (require (submod ".."))
-  (define jq (make-job-queue 4))
+  (define jq
+    (parameterize ([current-error-port (current-output-port)])
+      (make-job-queue 4)))
 
   (for ([i (in-range 100)])
     (submit-job! jq
