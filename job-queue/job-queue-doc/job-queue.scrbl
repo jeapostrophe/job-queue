@@ -1,6 +1,5 @@
 #lang scribble/manual
 @(require (for-label racket/base
-                     racket/gui
                      racket/contract
                      job-queue))
 
