@@ -2,7 +2,7 @@
 @(require (for-label racket/base
                      racket/gui
                      racket/contract
-                     "main.rkt"))
+                     job-queue))
 
 @title{Job Queue}
 @author{@(author+email "Jay McCarthy" "jay@racket-lang.org")}
